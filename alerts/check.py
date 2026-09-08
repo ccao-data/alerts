@@ -9,6 +9,8 @@ Usage:
     python -m alerts.check --dry-run
     # Run checks on all alerts in the default subdir and print output as JSON
     python -m alerts.check --format json
+    # Run specific alerts by id, regardless of whether they are due
+    python -m alerts.check --alert-ids some-alert other-alert
 
 For each alert in each config file, checks whether the alert's cron schedule
 fired within the past hour. If so, queries CloudWatch Logs and evaluates the
@@ -24,10 +26,15 @@ With --format json, outputs a JSON object to stdout with keys `any_failed`
 this script reads from the `any_failed` key in the JSON output to decide
 whether to notify and whether to fail the job.
 
-With --dry-run, only checks to see which alerts are due for checking, prints
-their human-readable names, and then exits. A dry run will print no output if
-no alerts are due. The workflow that runs this script uses this option to skip
-AWS authentication if no alerts are due for checking.
+With --dry-run, only checks to see which alerts are selected for checking,
+prints their human-readable names, and then exits. A dry run will print no
+output if no alerts are selected. The workflow that runs this script uses
+this option to skip AWS authentication if no alerts are selected for
+checking.
+
+With --alert-ids, only the alerts with the given ids are selected, regardless
+of whether they are currently due. Without --alert-ids, the alerts due at the
+current time (per each alert's cron `schedule`) are selected.
 """
 
 import argparse
@@ -45,6 +52,7 @@ from alerts.models import (
     Result,
     ResultContainer,
     ResultStatus,
+    find_alerts_by_id,
     find_due_alerts,
 )
 
@@ -98,13 +106,18 @@ def check_alerts(
     dry_run: bool = False,
     output_format: Literal["text", "json"] = "text",
     now: datetime | None = None,
+    alert_ids: list[str] | None = None,
 ) -> int:
     """Main entrypoint for the script logic. Takes a list of config files and
     parses them to run checks, printing what it finds to stdout and returning
     an integer representing the exit code for the script.
 
-    When `dry_run` is True, prints the names of due alerts then exits without
-    querying CloudWatch. Does not authenticate with AWS.
+    When `alert_ids` is provided, only the alerts with those ids are selected,
+    regardless of whether they are due. Otherwise, only the alerts due at
+    `now` are selected.
+
+    When `dry_run` is True, prints the names of selected alerts then exits
+    without querying CloudWatch. Does not authenticate with AWS.
 
     With `output_format="json"`, prints a JSON object instead of human-readable
     text. The object contains `any_failed` (bool) and `results` (list of
@@ -118,14 +131,17 @@ def check_alerts(
     if now is None:
         now = datetime.now(tz=timezone.utc)
 
-    due_alerts = find_due_alerts(config_files, now)
+    if alert_ids:
+        selected_alerts = find_alerts_by_id(config_files, alert_ids)
+    else:
+        selected_alerts = find_due_alerts(config_files, now)
 
     if dry_run:
-        for alert in due_alerts:
+        for alert in selected_alerts:
             print(alert.name)
         return 0
 
-    if not due_alerts:
+    if not selected_alerts:
         if output_format == "json":
             print(
                 json.dumps(
@@ -140,13 +156,13 @@ def check_alerts(
 
     if output_format == "text":
         print(
-            f"Checking {len(due_alerts)} alert(s) due at "
+            f"Checking {len(selected_alerts)} alert(s) due at "
             f"{now.strftime('%Y-%m-%d %H:%M UTC')}..."
         )
         print()
 
     results: list[Result] = []
-    for alert in due_alerts:
+    for alert in selected_alerts:
         result = evaluate_alert(alert, now, client)
         results.append(result)
         if output_format == "text":
@@ -201,6 +217,15 @@ def main() -> int:
         dest="output_format",
         help="Output format: 'text' (default) or 'json'.",
     )
+    parser.add_argument(
+        "--alert-ids",
+        nargs="+",
+        metavar="ID",
+        help=(
+            "One or more alert ids to run, regardless of whether they are "
+            "due. Defaults to running whichever alerts are currently due."
+        ),
+    )
     args = parser.parse_args()
 
     config_files = args.config_files or sorted(
@@ -215,7 +240,12 @@ def main() -> int:
             f"{str(ALERT_CONFIG_DIR)}/ subdir",
         )
 
-    return check_alerts(config_files, args.dry_run, args.output_format)
+    return check_alerts(
+        config_files,
+        args.dry_run,
+        args.output_format,
+        alert_ids=args.alert_ids,
+    )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from alerts.models import (
     Result,
     ResultContainer,
     ResultStatus,
+    find_alerts_by_id,
     find_due_alerts,
     is_due,
     required_fields,
@@ -584,3 +585,57 @@ class TestFindDueAlerts:
 
         assert len(due) == 2
         assert {a.name for a in due} == {"Due alert", "Another due alert"}
+
+
+# ---------------------------------------------------------------------------
+# Test find_alerts_by_id()
+# ---------------------------------------------------------------------------
+
+
+class TestFindAlertsById:
+    def test_returns_alert_regardless_of_due_status(
+        self, find_due_config: Path
+    ):
+        # "not-due-alert" is not due at _FIND_NOW, but should still be
+        # returned since it was explicitly requested by id
+        selected = find_alerts_by_id([find_due_config], ["not-due-alert"])
+        assert len(selected) == 1
+        assert selected[0].name == "Not due alert"
+
+    def test_returns_alerts_in_requested_order(self, find_due_config: Path):
+        selected = find_alerts_by_id(
+            [find_due_config], ["not-due-alert", "due-alert"]
+        )
+        assert [a.id for a in selected] == ["not-due-alert", "due-alert"]
+
+    def test_aggregates_across_multiple_config_files(
+        self, tmp_path: Path, find_due_config: Path
+    ):
+        second_config = {
+            "alerts": [
+                {
+                    "id": "another-alert",
+                    "name": "Another alert",
+                    "log_group": "/h",
+                    "log_query": "error",
+                    "fail_if": "match",
+                    "schedule": "0 12 1 * *",
+                    "lookback_hours": 6,
+                }
+            ]
+        }
+        second_file = tmp_path / "other.yml"
+        second_file.write_text(yaml.dump(second_config))
+
+        selected = find_alerts_by_id(
+            [find_due_config, second_file], ["due-alert", "another-alert"]
+        )
+        assert {a.name for a in selected} == {"Due alert", "Another alert"}
+
+    def test_raises_on_unknown_id(self, find_due_config: Path):
+        with pytest.raises(ValueError, match="Unknown alert id.*nonexistent"):
+            find_alerts_by_id([find_due_config], ["nonexistent"])
+
+    def test_raises_listing_all_unknown_ids(self, find_due_config: Path):
+        with pytest.raises(ValueError, match="foo, bar"):
+            find_alerts_by_id([find_due_config], ["foo", "bar"])

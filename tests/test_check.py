@@ -268,6 +268,54 @@ class TestCheckAlerts:
 
 
 # ---------------------------------------------------------------------------
+# Test check_alerts() alert_ids
+# ---------------------------------------------------------------------------
+
+
+class TestCheckAlertsAlertIds:
+    def test_dry_run_selects_alert_by_id_regardless_of_due_status(
+        self, find_due_config: Path, capsys: pytest.CaptureFixture
+    ):
+        # "not-due-alert" is not due at _FIND_NOW, but should still run
+        # because it was requested by id
+        exit_code = check_alerts(
+            config_files=[find_due_config],
+            dry_run=True,
+            now=_FIND_NOW,
+            alert_ids=["not-due-alert"],
+        )
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert captured.out.strip() == "Not due alert"
+
+    def test_checks_only_requested_alert(
+        self,
+        find_due_config: Path,
+        mocker: pytest_mock.MockerFixture,
+        capsys: pytest.CaptureFixture,
+    ):
+        # "not-due-alert" is fail_if=no_match; events found → pass
+        mocker.patch(
+            "alerts.check.boto3.client",
+            return_value=make_paginator({"events": [{"message": "hit"}]}),
+        )
+        check_alerts(
+            config_files=[find_due_config],
+            now=_FIND_NOW,
+            alert_ids=["not-due-alert"],
+        )
+        assert "1/1 alerts passed" in capsys.readouterr().out
+
+    def test_raises_on_unknown_alert_id(self, find_due_config: Path):
+        with pytest.raises(ValueError, match="Unknown alert id"):
+            check_alerts(
+                config_files=[find_due_config],
+                now=_FIND_NOW,
+                alert_ids=["nonexistent"],
+            )
+
+
+# ---------------------------------------------------------------------------
 # Test check_alerts() --format json
 # ---------------------------------------------------------------------------
 
@@ -423,3 +471,22 @@ class TestMain:
         mocker.patch("sys.argv", ["check", "--dry-run"])
         with pytest.raises(ValueError, match="No config files"):
             main()
+
+    def test_alert_ids_flag_selects_alert_regardless_of_due_status(
+        self,
+        tmp_path: Path,
+        two_alerts: tuple[Alert, Alert],
+        two_alert_config: Path,
+        mocker: pytest_mock.MockerFixture,
+        capsys: pytest.CaptureFixture,
+    ):
+        mocker.patch("alerts.check.ALERT_CONFIG_DIR", tmp_path)
+        mocker.patch(
+            "sys.argv",
+            ["check", "--dry-run", "--alert-ids", two_alerts[1].id],
+        )
+        mocker.patch("alerts.check.datetime").now.return_value = _FIND_NOW
+        exit_code = main()
+        captured = capsys.readouterr()
+        assert exit_code == 0
+        assert captured.out.strip() == two_alerts[1].name

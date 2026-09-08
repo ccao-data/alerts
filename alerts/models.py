@@ -382,9 +382,30 @@ def is_due(schedule: str, now: datetime) -> bool:
     return elapsed_seconds < CHECK_WINDOW_HOURS * 3600
 
 
-def find_due_alerts(config_files: list[Path], now: datetime) -> list[Alert]:
-    """Load config files and return only the alerts due at `now`."""
+def load_alerts(config_files: list[Path]) -> list[Alert]:
+    """Load and return all alerts from the given config files."""
     all_alerts: list[Alert] = []
     for path in config_files:
         all_alerts.extend(Alert.list_from_file(path))
-    return [a for a in all_alerts if is_due(a.schedule, now)]
+    return all_alerts
+
+
+def find_due_alerts(config_files: list[Path], now: datetime) -> list[Alert]:
+    """Load config files and return only the alerts due at `now`."""
+    return [a for a in load_alerts(config_files) if is_due(a.schedule, now)]
+
+
+def find_alerts_by_id(
+    config_files: list[Path], alert_ids: list[str]
+) -> list[Alert]:
+    """Load config files and return the alerts matching `alert_ids`, in the
+    order given, regardless of whether they are due.
+
+    Raises:
+        ValueError: If any id in `alert_ids` does not match a loaded alert.
+    """
+    alerts_by_id = {a.id: a for a in load_alerts(config_files)}
+    missing_ids = [a_id for a_id in alert_ids if a_id not in alerts_by_id]
+    if missing_ids:
+        raise ValueError(f"Unknown alert id(s): {', '.join(missing_ids)}")
+    return [alerts_by_id[a_id] for a_id in alert_ids]
